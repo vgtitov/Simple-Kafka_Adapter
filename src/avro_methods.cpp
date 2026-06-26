@@ -22,6 +22,7 @@
 #include <cmath>
 
 #include "SimpleKafka1C.h"
+#include "utils.h"
 
 //================================== Avro logical types: helpers ==================
 
@@ -595,15 +596,11 @@ bool SimpleKafka1C::putAvroSchema(const variant_t& schemaJsonName, const variant
 {
 	try
 	{
-		// Проверяем, существует ли схема с таким именем
-		auto it = schemesMap.find(std::get<std::string>(schemaJsonName));
-
-		if (it == schemesMap.end())
-		{
-			// Схема не существует, компилируем и добавляем ее в map
-			const avro::ValidSchema compiledScheme = avro::compileJsonSchemaFromString(std::get<std::string>(schemaJson));
-			schemesMap[std::get<std::string>(schemaJsonName)] = compiledScheme;
-		}
+		// Всегда (пере)компилируем и сохраняем схему под этим именем. Раньше при
+		// существующем имени обновление молча игнорировалось, из-за чего в кэше
+		// переиспользуемого экземпляра могла застрять устаревшая схема.
+		const avro::ValidSchema compiledScheme = avro::compileJsonSchemaFromString(std::get<std::string>(schemaJson));
+		schemesMap[std::get<std::string>(schemaJsonName)] = compiledScheme;
 	}
 	catch (std::exception const& ex)
 	{
@@ -1374,23 +1371,25 @@ static std::string convertAvroDatumToJsonString(const avro::GenericDatum& datum)
 
 variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const variant_t& schemaJsonName, const variant_t& asJson)
 {
+	std::string recvDiag;
 	try
 	{
-		// Получаем бинарные данные
-		const std::vector<char>* dataPtr = nullptr;
-		size_t dataSize = 0;
-
+		// Получаем входные данные. 1С может передать ДвоичныеДанные в нативный метод
+		// КАК base64 — причём и строкой (VTYPE_PWSTR), и blob'ом (VTYPE_BLOB), с
+		// переносами строк и в любом алфавите. Поэтому материализуем вход в строку
+		// и, если это валидный base64, раскодируем; иначе берём байты как есть.
+		const char* origType = "?";
+		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
 		{
-			dataPtr = &std::get<std::vector<char>>(avroData);
-			dataSize = dataPtr->size();
+			const std::vector<char>& b = std::get<std::vector<char>>(avroData);
+			origType = "BLOB";
+			origBytes.assign(b.begin(), b.end());
 		}
 		else if (std::holds_alternative<std::string>(avroData))
 		{
-			const std::string& str = std::get<std::string>(avroData);
-			messageData.assign(str.begin(), str.end());
-			dataPtr = &messageData;
-			dataSize = messageData.size();
+			origType = "STRING";
+			origBytes = std::get<std::string>(avroData);
 		}
 		else
 		{
@@ -1398,10 +1397,61 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 			return std::string("");
 		}
 
+		const size_t origLen = origBytes.size();
+		std::vector<char> decoded;
+		const bool b64decoded = tryBase64Decode(origBytes, decoded);
+		if (b64decoded)
+		{
+			messageData = std::move(decoded);
+		}
+		else
+		{
+			messageData.assign(origBytes.begin(), origBytes.end());
+		}
+		const std::vector<char>* dataPtr = &messageData;
+		size_t dataSize = messageData.size();
+
 		if (dataSize == 0)
 		{
 			msg_err = "AVRO data is empty";
 			return std::string("");
+		}
+
+		// Fingerprint of what ACTUALLY arrived from 1C (type / length / whether it
+		// was base64-decoded / first bytes), surfaced via GetLastError on failure.
+		{
+			static const char* H = "0123456789ABCDEF";
+			std::string extra = std::string(" inLen=") + std::to_string(origLen) +
+			                    " b64dec=" + (b64decoded ? "yes" : "no");
+			if (!b64decoded)
+			{
+				for (size_t j = 0; j < origLen; ++j)
+				{
+					const unsigned char c = static_cast<unsigned char>(origBytes[j]);
+					const bool okc = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+					                 (c >= '0' && c <= '9') || c == '+' || c == '/' ||
+					                 c == '-' || c == '_' || c == '=' || c == ' ' ||
+					                 c == '\t' || c == '\r' || c == '\n';
+					if (!okc)
+					{
+						extra += " badChar@" + std::to_string(j) + "=0x";
+						extra += H[c >> 4];
+						extra += H[c & 0xF];
+						break;
+					}
+				}
+			}
+			std::string hex;
+			size_t nn = dataSize < 16 ? dataSize : 16;
+			for (size_t i = 0; i < nn; ++i)
+			{
+				uint8_t bb = static_cast<uint8_t>((*dataPtr)[i]);
+				hex += H[bb >> 4];
+				hex += H[bb & 0xF];
+				hex += ' ';
+			}
+			recvDiag = " [recv: " + std::string(origType) + extra +
+			           " size=" + std::to_string(dataSize) + " first16=" + hex + "]";
 		}
 
 		// Безопасное получение параметров
@@ -1570,17 +1620,20 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 	{
 		msg_err = "AVRO error: ";
 		msg_err += ex.what();
+		msg_err += recvDiag;
 		return std::string("");
 	}
 	catch (const std::exception& ex)
 	{
 		msg_err = "Error decoding AVRO: ";
 		msg_err += ex.what();
+		msg_err += recvDiag;
 		return std::string("");
 	}
 	catch (...)
 	{
 		msg_err = "Unknown error decoding AVRO";
+		msg_err += recvDiag;
 		return std::string("");
 	}
 }
@@ -1601,7 +1654,20 @@ variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData)
 		else if (std::holds_alternative<std::string>(avroData))
 		{
 			const std::string& str = std::get<std::string>(avroData);
-			messageData.assign(str.begin(), str.end());
+			// 1C marshals ДвоичныеДанные passed to a native method as a base64
+			// STRING, not a binary BLOB. If the incoming string is valid base64,
+			// decode it back to the original bytes; otherwise treat it as raw.
+			// (A raw Confluent/Avro payload starts with 0x00 / "Obj\x01", which is
+			// not pure base64, so it never false-matches as base64.)
+			std::vector<char> decoded;
+			if (tryBase64Decode(str, decoded))
+			{
+				messageData = std::move(decoded);
+			}
+			else
+			{
+				messageData.assign(str.begin(), str.end());
+			}
 			dataPtr = &messageData;
 			dataSize = messageData.size();
 		}

@@ -271,6 +271,7 @@ private:
 	// Utilites
 	bool sleep(const variant_t &delay);
 	int32_t getProcessId();
+	std::string getBuildInfo();
 	bool setLogDirectory(const variant_t& logDir);
 	bool setFormatLogFiles(const variant_t& format);
 	std::string getLastError();

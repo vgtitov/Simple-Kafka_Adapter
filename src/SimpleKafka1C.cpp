@@ -22,8 +22,16 @@
 #include "SimpleKafka1C.h"
 #include "utils.h"
 
+// Library version headers for GetBuildInfo / ВерсияСборки.
+#include <boost/version.hpp>
+#include <fmt/format.h>
+#include <curl/curl.h>
+#include <zlib.h>
+#include <google/protobuf/stubs/common.h>
+
 #ifdef SIMPLEKAFKA_HAS_OPENSSL
 #include <openssl/err.h>
+#include <openssl/opensslv.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
 #include <openssl/ssl.h>
@@ -501,6 +509,7 @@ SimpleKafka1C::SimpleKafka1C()
 
 	AddMethod(L"Sleep", L"Пауза", this, &SimpleKafka1C::sleep);
 	AddMethod(L"GetProcessId", L"ПолучитьИдентификаторПроцесса", this, &SimpleKafka1C::getProcessId);
+	AddMethod(L"GetBuildInfo", L"ВерсияСборки", this, &SimpleKafka1C::getBuildInfo);
 	AddMethod(L"SetLogDirectory", L"УстановитьКаталогЛогов", this, &SimpleKafka1C::setLogDirectory);
 	AddMethod(L"SetFormatLogFiles", L"УстановитьФорматЛогов", this, &SimpleKafka1C::setFormatLogFiles);
 
@@ -969,6 +978,36 @@ int32_t SimpleKafka1C::getProcessId()
 	// in-process loading, or the dedicated subprocess on out-of-process loading).
 	// Useful for identifying/terminating the component in OS task managers.
 	return static_cast<int32_t>(pid);
+}
+
+std::string SimpleKafka1C::getBuildInfo()
+{
+	// Build/library fingerprint. The build-tag lets 1C confirm WHICH binary is
+	// actually loaded (defeats stale add-in cache); the avro-cpp version is the
+	// one that matters for the recursive-schema decode bug (must be >= 1.12.1).
+	std::string avroVer =
+#ifdef AVROCPP_BUILD_VERSION
+		AVROCPP_BUILD_VERSION;
+#else
+		"unknown";
+#endif
+
+	std::ostringstream os;
+	os << "SimpleKafka1C build-tag=avro1121-20260626-fork6-b64blob\n";
+	os << "avro-cpp=" << avroVer << "\n";
+	os << "librdkafka=" << RdKafka::version_str() << "\n";
+	os << "boost=" << BOOST_LIB_VERSION << "\n";
+	os << "protobuf=" << GOOGLE_PROTOBUF_VERSION << "\n";
+	os << "fmt=" << (FMT_VERSION / 10000) << "."
+	   << ((FMT_VERSION / 100) % 100) << "." << (FMT_VERSION % 100) << "\n";
+	os << "curl=" << curl_version() << "\n";
+	os << "zlib=" << ZLIB_VERSION << "\n";
+#ifdef SIMPLEKAFKA_HAS_OPENSSL
+	os << "openssl=" << OPENSSL_VERSION_TEXT << "\n";
+#else
+	os << "openssl=(windows native)\n";
+#endif
+	return os.str();
 }
 
 bool SimpleKafka1C::setLogDirectory(const variant_t& logDir)
