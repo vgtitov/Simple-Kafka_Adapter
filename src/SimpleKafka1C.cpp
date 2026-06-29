@@ -1027,7 +1027,7 @@ std::string SimpleKafka1C::getBuildInfo()
 #endif
 
 	std::ostringstream os;
-	os << "SimpleKafka1C build-tag=avro1121-20260626-fork7-opt\n";
+	os << "SimpleKafka1C version=" << Version << " (avro-cpp 1.12.1, base64-input fix)\n";
 	os << "avro-cpp=" << avroVer << "\n";
 	os << "librdkafka=" << RdKafka::version_str() << "\n";
 	os << "boost=" << BOOST_LIB_VERSION << "\n";

@@ -613,17 +613,67 @@ bool SimpleKafka1C::putAvroSchema(const variant_t& schemaJsonName, const variant
 // Вспомогательная функция для рекурсивного заполнения GenericDatum из JSON
 static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value& jsonValue, std::string& errMsg, const std::string& path = "")
 {
-	// Обработка union типов
+	// Обработка union типов: подбираем ветку по типу JSON-значения, а не хардкодим
+	// индекс. Поддерживает union с >2 ветками и без null. Для классического
+	// [null, T] поведение прежнее (null→0, не-null→ветка T).
 	if (datum.isUnion())
 	{
+		const avro::NodePtr& un = datum.value<avro::GenericUnion>().schema();
+		const size_t nb = un->leaves();
+		size_t chosen = nb; // sentinel "не найдено"
+
 		if (jsonValue.is_null())
 		{
-			// null - первая ветка union (обычно ["null", "type"])
-			datum.selectBranch(0);
-			return true;
+			for (size_t i = 0; i < nb; ++i)
+				if (un->leafAt(i)->type() == avro::AVRO_NULL) { chosen = i; break; }
 		}
-		// Не null - выбираем вторую ветку
-		datum.selectBranch(1);
+		else
+		{
+			for (size_t i = 0; i < nb; ++i)
+			{
+				bool match = false;
+				switch (un->leafAt(i)->type())
+				{
+				case avro::AVRO_STRING:
+				case avro::AVRO_ENUM:
+				case avro::AVRO_BYTES:
+				case avro::AVRO_FIXED:
+					match = jsonValue.is_string();
+					break;
+				case avro::AVRO_BOOL:
+					match = jsonValue.is_bool();
+					break;
+				case avro::AVRO_INT:
+				case avro::AVRO_LONG:
+					match = jsonValue.is_int64() || jsonValue.is_uint64();
+					break;
+				case avro::AVRO_FLOAT:
+				case avro::AVRO_DOUBLE:
+					match = jsonValue.is_double() || jsonValue.is_int64() || jsonValue.is_uint64();
+					break;
+				case avro::AVRO_RECORD:
+				case avro::AVRO_MAP:
+					match = jsonValue.is_object();
+					break;
+				case avro::AVRO_ARRAY:
+					match = jsonValue.is_array();
+					break;
+				default:
+					break;
+				}
+				if (match) { chosen = i; break; }
+			}
+		}
+
+		if (chosen >= nb)
+		{
+			// Фолбэк к прежнему поведению ([null, T]).
+			chosen = jsonValue.is_null() ? 0 : (nb > 1 ? 1 : 0);
+		}
+		datum.selectBranch(chosen);
+
+		if (jsonValue.is_null())
+			return true;
 	}
 
 	avro::LogicalType lt = datum.logicalType();
