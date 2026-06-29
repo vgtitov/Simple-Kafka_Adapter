@@ -596,11 +596,26 @@ bool SimpleKafka1C::putAvroSchema(const variant_t& schemaJsonName, const variant
 {
 	try
 	{
-		// Всегда (пере)компилируем и сохраняем схему под этим именем. Раньше при
-		// существующем имени обновление молча игнорировалось, из-за чего в кэше
-		// переиспользуемого экземпляра могла застрять устаревшая схема.
-		const avro::ValidSchema compiledScheme = avro::compileJsonSchemaFromString(std::get<std::string>(schemaJson));
-		schemesMap[std::get<std::string>(schemaJsonName)] = compiledScheme;
+		if (!std::holds_alternative<std::string>(schemaJsonName) || !std::holds_alternative<std::string>(schemaJson))
+		{
+			msg_err = "PutAvroSchema: schema name and JSON must be strings";
+			return false;
+		}
+		const std::string& name = std::get<std::string>(schemaJsonName);
+		const std::string& json = std::get<std::string>(schemaJson);
+
+		// Перекомпилируем ТОЛЬКО если схема под этим именем ещё не зарегистрирована
+		// или её текст изменился. Это применяет обновление схемы (в отличие от прежнего
+		// register-once) и не тратит CPU на повторную компиляцию того же текста при
+		// многократных вызовах (на каждый пакет).
+		auto it = schemaTexts.find(name);
+		if (it != schemaTexts.end() && it->second == json)
+		{
+			return true; // тот же текст — уже скомпилирована
+		}
+
+		schemesMap[name] = avro::compileJsonSchemaFromString(json);
+		schemaTexts[name] = json;
 	}
 	catch (std::exception const& ex)
 	{
