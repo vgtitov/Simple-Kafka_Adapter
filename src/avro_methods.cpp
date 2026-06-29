@@ -1398,18 +1398,20 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 		}
 
 		const size_t origLen = origBytes.size();
+		// Локальный буфер: НЕ затираем член messageData (тело последнего kafka-сообщения).
+		std::vector<char> payloadBuf;
 		std::vector<char> decoded;
 		const bool b64decoded = tryBase64Decode(origBytes, decoded);
 		if (b64decoded)
 		{
-			messageData = std::move(decoded);
+			payloadBuf = std::move(decoded);
 		}
 		else
 		{
-			messageData.assign(origBytes.begin(), origBytes.end());
+			payloadBuf.assign(origBytes.begin(), origBytes.end());
 		}
-		const std::vector<char>* dataPtr = &messageData;
-		size_t dataSize = messageData.size();
+		const std::vector<char>* dataPtr = &payloadBuf;
+		size_t dataSize = payloadBuf.size();
 
 		if (dataSize == 0)
 		{
@@ -1642,40 +1644,32 @@ variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData)
 {
 	try
 	{
-		// Получаем бинарные данные
-		const std::vector<char>* dataPtr = nullptr;
-		size_t dataSize = 0;
-
+		// Вход может прийти из 1С как base64 (строкой ИЛИ blob'ом) — раскодируем,
+		// иначе берём байты как есть. Локальный буфер: член messageData не трогаем.
+		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
 		{
-			dataPtr = &std::get<std::vector<char>>(avroData);
-			dataSize = dataPtr->size();
+			const std::vector<char>& b = std::get<std::vector<char>>(avroData);
+			origBytes.assign(b.begin(), b.end());
 		}
 		else if (std::holds_alternative<std::string>(avroData))
 		{
-			const std::string& str = std::get<std::string>(avroData);
-			// 1C marshals ДвоичныеДанные passed to a native method as a base64
-			// STRING, not a binary BLOB. If the incoming string is valid base64,
-			// decode it back to the original bytes; otherwise treat it as raw.
-			// (A raw Confluent/Avro payload starts with 0x00 / "Obj\x01", which is
-			// not pure base64, so it never false-matches as base64.)
-			std::vector<char> decoded;
-			if (tryBase64Decode(str, decoded))
-			{
-				messageData = std::move(decoded);
-			}
-			else
-			{
-				messageData.assign(str.begin(), str.end());
-			}
-			dataPtr = &messageData;
-			dataSize = messageData.size();
+			origBytes = std::get<std::string>(avroData);
 		}
 		else
 		{
 			msg_err = "Invalid data type for avroData. Expected string or binary data";
 			return std::string("");
 		}
+
+		std::vector<char> payloadBuf;
+		std::vector<char> decoded;
+		if (tryBase64Decode(origBytes, decoded))
+			payloadBuf = std::move(decoded);
+		else
+			payloadBuf.assign(origBytes.begin(), origBytes.end());
+		const std::vector<char>* dataPtr = &payloadBuf;
+		size_t dataSize = payloadBuf.size();
 
 		if (dataSize == 0)
 		{

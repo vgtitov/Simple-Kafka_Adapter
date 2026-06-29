@@ -379,6 +379,9 @@ private:
 	public:
 
 		std::vector<RdKafka::TopicPartition*> offsets;
+		// offsets трогают и поток 1С (setReadingPosition(s)/деструктор), и фоновый
+		// поток poll librdkafka (rebalance_cb) — защищаем от гонок/двойного delete.
+		std::mutex offsetsMtx;
 
 		void rebalance_cb(RdKafka::KafkaConsumer* consumer,
 			RdKafka::ErrorCode err,

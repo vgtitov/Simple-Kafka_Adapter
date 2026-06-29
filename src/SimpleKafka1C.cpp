@@ -320,9 +320,10 @@ void SimpleKafka1C::clDeliveryReportCb::dr_cb(RdKafka::Message& message)
 
 void SimpleKafka1C::clRebalanceCb::rebalance_cb(RdKafka::KafkaConsumer* consumer,
 	RdKafka::ErrorCode err,
-	std::vector<RdKafka::TopicPartition*>& partitions) 
+	std::vector<RdKafka::TopicPartition*>& partitions)
 	{
-	if (err == RdKafka::ERR__ASSIGN_PARTITIONS) 
+	std::lock_guard<std::mutex> lk(offsetsMtx);
+	if (err == RdKafka::ERR__ASSIGN_PARTITIONS)
 	{
 		if (offsets.size()) 
 		{
@@ -566,11 +567,14 @@ SimpleKafka1C::~SimpleKafka1C()
 	stopProducer();
 
 	// Очистка rebalance callback offsets для предотвращения утечки памяти
-	for (auto* offset : cl_rebalance_cb.offsets)
 	{
-		delete offset;
+		std::lock_guard<std::mutex> lk(cl_rebalance_cb.offsetsMtx);
+		for (auto* offset : cl_rebalance_cb.offsets)
+		{
+			delete offset;
+		}
+		cl_rebalance_cb.offsets.clear();
 	}
-	cl_rebalance_cb.offsets.clear();
 
 #ifdef SIMPLEKAFKA_HAS_OPENSSL
 	for (OSSL_PROVIDER* provider : loadedSslProviderHandles)
@@ -592,7 +596,25 @@ SimpleKafka1C::~SimpleKafka1C()
 
 void SimpleKafka1C::setParameter(const variant_t& key, const variant_t& value)
 {
-	settings.push_back({ std::get<std::string>(key), std::get<std::string>(value) });
+	if (!std::holds_alternative<std::string>(key) || !std::holds_alternative<std::string>(value))
+	{
+		msg_err = "SetParameter: key and value must be strings";
+		return;
+	}
+	const std::string k = std::get<std::string>(key);
+	const std::string v = std::get<std::string>(value);
+	// upsert: один ключ — одно значение. Иначе на переиспользуемом экземпляре
+	// настройки накапливаются дублями, а clientID()/getSettingValue() расходятся
+	// (первое vs последнее значение).
+	for (auto& s : settings)
+	{
+		if (s.Key == k)
+		{
+			s.Value = v;
+			return;
+		}
+	}
+	settings.push_back({ k, v });
 }
 
 std::string SimpleKafka1C::getParameters()
@@ -635,8 +657,20 @@ bool SimpleKafka1C::setPartitioner(const variant_t& partitionerType)
 	}
 
 	partitionerStrategy = type;
-	// Устанавливаем параметр через setParameter для применения при инициализации продюсера
-	settings.push_back({ "partitioner", type });
+	// Устанавливаем параметр для применения при инициализации продюсера (upsert,
+	// чтобы повторные вызовы не плодили дубли "partitioner").
+	bool found = false;
+	for (auto& s : settings)
+	{
+		if (s.Key == "partitioner")
+		{
+			s.Value = type;
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+		settings.push_back({ "partitioner", type });
 	return true;
 }
 
@@ -993,7 +1027,7 @@ std::string SimpleKafka1C::getBuildInfo()
 #endif
 
 	std::ostringstream os;
-	os << "SimpleKafka1C build-tag=avro1121-20260626-fork6-b64blob\n";
+	os << "SimpleKafka1C build-tag=avro1121-20260626-fork7-opt\n";
 	os << "avro-cpp=" << avroVer << "\n";
 	os << "librdkafka=" << RdKafka::version_str() << "\n";
 	os << "boost=" << BOOST_LIB_VERSION << "\n";
