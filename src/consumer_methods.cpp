@@ -17,6 +17,8 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <thread>
+#include <chrono>
 
 //================================== Consumer ==========================================
 
@@ -736,7 +738,29 @@ bool SimpleKafka1C::commitOffset(const variant_t& topicName, const variant_t& of
 	RdKafka::TopicPartition* ptr = RdKafka::TopicPartition::create(tTopicName, tPartition, tOffset);
 	offsets.push_back(ptr);
 
-	RdKafka::ErrorCode err = hConsumer->commitSync(offsets);
+	// Транзиентные сбои коммита повторяем с короткой паузой. Частый случай в режиме
+	// assign (без subscribe): на свежем консьюмере координатор группы ещё не найден к
+	// моменту commitSync -> "Local: Waiting for coordinator". Координатор обнаруживается
+	// лениво, поэтому повтор через доли секунды обычно проходит. Также покрывает
+	// таймаут/транспорт/ребаланс. Распознаём по тексту ошибки (не зависим от имён enum).
+	RdKafka::ErrorCode err = RdKafka::ERR_NO_ERROR;
+	for (int attempt = 0; attempt < 4; ++attempt)
+	{
+		err = hConsumer->commitSync(offsets);
+		if (err == RdKafka::ERR_NO_ERROR)
+			break;
+
+		const std::string es = RdKafka::err2str(err);
+		const bool transient =
+			es.find("oordinator") != std::string::npos || // Waiting for coordinator / Coordinator not available
+			es.find("imed out")  != std::string::npos ||  // Local: Timed out
+			es.find("ransport")  != std::string::npos ||  // Broker transport failure
+			es.find("ebalance")  != std::string::npos;     // Rebalance in progress
+		if (!transient)
+			break;
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(400));
+	}
 
 	// Очистка TopicPartition* для предотвращения утечки памяти
 	for (auto tp : offsets) {
