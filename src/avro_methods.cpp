@@ -853,7 +853,10 @@ static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value
 		return true;
 
 	case avro::AVRO_NULL:
-		datum.value<avro::null>() = avro::null();
+		// Ничего не присваиваем: у датума типа null внутренний std::any ПУСТОЙ,
+		// поэтому datum.value<avro::null>() — это разыменование nullptr (тот же
+		// паттерн, что уронил кодирование union). Значение null уже установлено
+		// самим типом датума.
 		return true;
 
 	case avro::AVRO_BYTES:

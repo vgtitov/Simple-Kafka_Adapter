@@ -1027,11 +1027,13 @@ std::string SimpleKafka1C::getBuildInfo()
 #endif
 
 	std::ostringstream os;
-	os << "SimpleKafka1C version=" << Version << " (avro-cpp 1.12.1, base64-input fix)\n";
+	os << "SimpleKafka1C version=" << Version << "\n";
 	os << "avro-cpp=" << avroVer << "\n";
 	os << "librdkafka=" << RdKafka::version_str() << "\n";
 	os << "boost=" << BOOST_LIB_VERSION << "\n";
-	os << "protobuf=" << GOOGLE_PROTOBUF_VERSION << "\n";
+	// GOOGLE_PROTOBUF_VERSION — целое вида MMMNNNPPP (4025002 = 4.25.2).
+	os << "protobuf=" << (GOOGLE_PROTOBUF_VERSION / 1000000) << "."
+	   << ((GOOGLE_PROTOBUF_VERSION / 1000) % 1000) << "." << (GOOGLE_PROTOBUF_VERSION % 1000) << "\n";
 	os << "fmt=" << (FMT_VERSION / 10000) << "."
 	   << ((FMT_VERSION / 100) % 100) << "." << (FMT_VERSION % 100) << "\n";
 	os << "curl=" << curl_version() << "\n";

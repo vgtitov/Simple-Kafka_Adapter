@@ -157,11 +157,48 @@ class SimpleKafka1C::ProtobufContext
 {
 public:
 	std::map<std::string, const google::protobuf::Descriptor*> descriptors;
+	std::map<std::string, std::string> schemaTexts;	// исходный текст .proto по имени схемы
 	google::protobuf::DescriptorPool pool;
 	google::protobuf::DynamicMessageFactory factory;
-	int buildSeq = 0; // уникализация имени файла при пере-регистрации схемы
 
 	ProtobufContext() : factory(&pool) {}
+
+	// Разбирает текст .proto и регистрирует его в ЭТОМ пуле под именем name.
+	// Один пул — одна регистрация каждого символа: повторный вызов для той же
+	// схемы делать нельзя (protobuf ответит "already defined"), поэтому обновление
+	// схемы выполняется пересборкой контекста целиком (см. putProtoSchema).
+	bool build(const std::string& name, const std::string& schema, std::string& err)
+	{
+		google::protobuf::io::ArrayInputStream input(schema.data(), static_cast<int>(schema.size()));
+		google::protobuf::io::Tokenizer tokenizer(&input, nullptr);
+
+		google::protobuf::compiler::Parser parser;
+		google::protobuf::FileDescriptorProto fileDescProto;
+		fileDescProto.set_name(name + ".proto");
+
+		if (!parser.Parse(&tokenizer, &fileDescProto))
+		{
+			err = "Proto schema parsing error (schema '" + name + "')";
+			return false;
+		}
+
+		const google::protobuf::FileDescriptor* fileDesc = pool.BuildFile(fileDescProto);
+		if (!fileDesc)
+		{
+			err = "Failed to build descriptor from proto schema '" + name + "'";
+			return false;
+		}
+
+		if (fileDesc->message_type_count() == 0)
+		{
+			err = "Proto schema '" + name + "' contains no message definitions";
+			return false;
+		}
+
+		descriptors[name] = fileDesc->message_type(0);
+		schemaTexts[name] = schema;
+		return true;
+	}
 };
 
 bool SimpleKafka1C::putProtoSchema(const variant_t& schemaName, const variant_t& protoSchema)
@@ -181,42 +218,35 @@ bool SimpleKafka1C::putProtoSchema(const variant_t& schemaName, const variant_t&
 		std::string name = std::get<std::string>(schemaName);
 		std::string schema = std::get<std::string>(protoSchema);
 
-		// Не пропускаем уже зарегистрированное имя: обновлённая схема должна
-		// применяться. DescriptorPool не умеет пересобрать файл с тем же именем,
-		// поэтому имя файла уникализируем порядковым номером, а дескриптор
-		// перезаписываем под исходным именем `name`.
-		google::protobuf::io::ArrayInputStream input(schema.data(), static_cast<int>(schema.size()));
-		google::protobuf::io::Tokenizer tokenizer(&input, nullptr);
-
-		google::protobuf::compiler::Parser parser;
-		google::protobuf::FileDescriptorProto fileDescProto;
-		fileDescProto.set_name(name + "." + std::to_string(++protoContext->buildSeq) + ".proto");
-
-		if (!parser.Parse(&tokenizer, &fileDescProto))
+		// Обновление схемы применяется, повторная регистрация того же текста — нет.
+		// Так работает и putAvroSchema. Почему не «просто зарегистрировать заново»:
+		// DescriptorPool не допускает повторного объявления символа, а регистрация
+		// под уникализированным именем файла упирается в то же ("already defined")
+		// и растит пул на каждый вызов — а 1С зовёт метод перед каждым сообщением.
+		auto known = protoContext->schemaTexts.find(name);
+		if (known != protoContext->schemaTexts.end())
 		{
-			msg_err = "Proto schema parsing error";
+			if (known->second == schema)
+				return true;	// тот же текст — уже собрана
+
+			// Текст изменился: собираем ЧИСТЫЙ контекст со всеми известными схемами
+			// (в старом пуле имена уже заняты). Прежний контекст жив, пока на него
+			// кто-то ссылается, поэтому подмена безопасна.
+			auto texts = protoContext->schemaTexts;
+			texts[name] = schema;
+
+			auto fresh = std::make_shared<ProtobufContext>();
+			for (const auto& kv : texts)
+			{
+				if (!fresh->build(kv.first, kv.second, msg_err))
+					return false;
+			}
+			protoContext = fresh;
+			return true;
+		}
+
+		if (!protoContext->build(name, schema, msg_err))
 			return false;
-		}
-
-		// Build descriptor from FileDescriptorProto
-		const google::protobuf::FileDescriptor* fileDesc = protoContext->pool.BuildFile(fileDescProto);
-		if (!fileDesc)
-		{
-			msg_err = "Failed to build descriptor from proto schema";
-			return false;
-		}
-
-		// Find the message type (assuming first message in file)
-		if (fileDesc->message_type_count() > 0)
-		{
-			const google::protobuf::Descriptor* descriptor = fileDesc->message_type(0);
-			protoContext->descriptors[name] = descriptor;
-		}
-		else
-		{
-			msg_err = "Proto schema contains no message definitions";
-			return false;
-		}
 	}
 	catch (std::exception const& ex)
 	{
