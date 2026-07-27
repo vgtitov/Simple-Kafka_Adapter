@@ -80,3 +80,13 @@ git push -u origin upstream/<тема>
 | Дата | PR | Итог |
 |---|---|---|
 | 2026-06-23 | [#80](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/80) «Проброс текста ошибок librdkafka в 1С (GetLastError)» | Влит 28.06.2026, вошёл в апстрим 1.9.2. Автор поверх добавил свою чистку `msg_err` в best-effort шагах |
+| 2026-07-27 | [#81](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/81) Воспроизводимая сборка: скрипты, гейт avro-cpp, Docker, переписанная `docs/building.md` | открыт, ветка `upstream/build-docs` |
+| 2026-07-27 | [#82](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/82) `consume()`: запись за границу буфера librdkafka | открыт, ветка `upstream/consume-buffer-overrun` |
+| 2026-07-27 | [#83](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/83) Консьюмер: `unique_ptr` на сообщения, мьютекс на offsets ребаланса | открыт, ветка `upstream/resource-safety` |
+| 2026-07-27 | [#84](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/84) AVRO: ветка union по схеме вместо индексов 0/1 | открыт, ветка `upstream/avro-union-branch` |
+| 2026-07-27 | [#85](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/85) Настройки: upsert по ключу, понятная ошибка вместо `bad_variant_access` | открыт, ветка `upstream/param-validation` |
+| 2026-07-27 | [#86](https://github.com/NuclearAPK/Simple-Kafka_Adapter/pull/86) Обновление схемы применяется (кэш текста в `PutAvroSchema`/`PutProtoSchema`) | открыт, ветка `upstream/schema-update` |
+| 2026-07-27 | [#87](https://github.com/NuclearAPK/Simple-Kafka_Adapter/issues/87) issue: 1С иногда передаёт тело как base64 — как правильнее обработать | задан вопрос, PR будет под выбранный автором вариант |
+
+Все шесть PR собраны от `upstream/main` и проверены сборкой Release на Windows (MSVC, x64-windows-static)
+поштучно — каждая ветка компилируется сама по себе.
