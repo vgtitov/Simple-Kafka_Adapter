@@ -22,6 +22,7 @@
 #include <cmath>
 
 #include "SimpleKafka1C.h"
+#include "utils.h"
 
 //================================== Avro logical types: helpers ==================
 
@@ -603,15 +604,26 @@ bool SimpleKafka1C::putAvroSchema(const variant_t& schemaJsonName, const variant
 {
 	try
 	{
-		// Проверяем, существует ли схема с таким именем
-		auto it = schemesMap.find(std::get<std::string>(schemaJsonName));
-
-		if (it == schemesMap.end())
+		if (!std::holds_alternative<std::string>(schemaJsonName) || !std::holds_alternative<std::string>(schemaJson))
 		{
-			// Схема не существует, компилируем и добавляем ее в map
-			const avro::ValidSchema compiledScheme = avro::compileJsonSchemaFromString(std::get<std::string>(schemaJson));
-			schemesMap[std::get<std::string>(schemaJsonName)] = compiledScheme;
+			msg_err = "PutAvroSchema: schema name and JSON must be strings";
+			return false;
 		}
+		const std::string& name = std::get<std::string>(schemaJsonName);
+		const std::string& json = std::get<std::string>(schemaJson);
+
+		// Перекомпилируем ТОЛЬКО если схема под этим именем ещё не зарегистрирована
+		// или её текст изменился. Это применяет обновление схемы (в отличие от прежнего
+		// register-once) и не тратит CPU на повторную компиляцию того же текста при
+		// многократных вызовах (на каждый пакет).
+		auto it = schemaTexts.find(name);
+		if (it != schemaTexts.end() && it->second == json)
+		{
+			return true; // тот же текст — уже скомпилирована
+		}
+
+		schemesMap[name] = avro::compileJsonSchemaFromString(json);
+		schemaTexts[name] = json;
 	}
 	catch (std::exception const& ex)
 	{
@@ -621,20 +633,102 @@ bool SimpleKafka1C::putAvroSchema(const variant_t& schemaJsonName, const variant
 	return msg_err.empty();
 }
 
-// Вспомогательная функция для рекурсивного заполнения GenericDatum из JSON
-static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value& jsonValue, std::string& errMsg, const std::string& path = "")
+// Ветка union, содержащая null (для отсутствующих в JSON полей). Если null-ветки
+// нет или узел не union — 0 (прежнее поведение).
+static size_t avroNullBranch(const avro::NodePtr& node)
 {
-	// Обработка union типов
+	if (!node || node->type() != avro::AVRO_UNION)
+		return 0;
+	for (size_t i = 0; i < node->leaves(); ++i)
+		if (node->leafAt(i)->type() == avro::AVRO_NULL)
+			return i;
+	return 0;
+}
+
+// Вспомогательная функция для рекурсивного заполнения GenericDatum из JSON.
+// schemaNode — узел схемы, которому соответствует datum (нужен ТОЛЬКО для union,
+// см. комментарий ниже). Для остальных типов схема берётся из самого datum.
+static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value& jsonValue, std::string& errMsg, const std::string& path = "", const avro::NodePtr& schemaNode = avro::NodePtr())
+{
+	// Обработка union типов: подбираем ветку по типу JSON-значения, а не хардкодим
+	// индекс. Поддерживает union с >2 ветками и без null. Для классического
+	// [null, T] поведение прежнее (null→0, не-null→ветка T).
 	if (datum.isUnion())
 	{
+		// ВНИМАНИЕ: схему union НЕЛЬЗЯ получать через datum.value<avro::GenericUnion>().
+		// GenericDatum::value<T>() прозрачно РАЗВОРАЧИВАЕТ union и для T=GenericUnion
+		// возвращает *any_cast<GenericUnion>(&<any выбранной ветки>), т.е. разыменование
+		// nullptr → SIGSEGV (аварийное завершение внешней компоненты, в ЖР ничего нет).
+		// Узел схемы приходит параметром от вызывающего (поле записи / элемент массива).
+		avro::NodePtr un = schemaNode;
+		if (un && un->type() != avro::AVRO_UNION)
+			un.reset();
+
+		const size_t nb = un ? un->leaves() : 0;
+		size_t chosen = nb; // sentinel "не найдено"
+
 		if (jsonValue.is_null())
 		{
-			// null - первая ветка union (обычно ["null", "type"])
-			datum.selectBranch(0);
-			return true;
+			for (size_t i = 0; i < nb; ++i)
+				if (un->leafAt(i)->type() == avro::AVRO_NULL) { chosen = i; break; }
 		}
-		// Не null - выбираем вторую ветку
-		datum.selectBranch(1);
+		else
+		{
+			for (size_t i = 0; i < nb; ++i)
+			{
+				bool match = false;
+				switch (un->leafAt(i)->type())
+				{
+				case avro::AVRO_STRING:
+				case avro::AVRO_ENUM:
+				case avro::AVRO_BYTES:
+				case avro::AVRO_FIXED:
+					match = jsonValue.is_string();
+					break;
+				case avro::AVRO_BOOL:
+					match = jsonValue.is_bool();
+					break;
+				case avro::AVRO_INT:
+				case avro::AVRO_LONG:
+					match = jsonValue.is_int64() || jsonValue.is_uint64();
+					break;
+				case avro::AVRO_FLOAT:
+				case avro::AVRO_DOUBLE:
+					match = jsonValue.is_double() || jsonValue.is_int64() || jsonValue.is_uint64();
+					break;
+				case avro::AVRO_RECORD:
+				case avro::AVRO_MAP:
+					match = jsonValue.is_object();
+					break;
+				case avro::AVRO_ARRAY:
+					match = jsonValue.is_array();
+					break;
+				case avro::AVRO_SYMBOLIC:
+					// Ссылка на именованный тип (рекурсивные схемы). Реальный тип
+					// без резолва неизвестен; объект — практически всегда record.
+					match = jsonValue.is_object();
+					break;
+				default:
+					break;
+				}
+				if (match) { chosen = i; break; }
+			}
+		}
+
+		if (nb == 0)
+		{
+			// Схема ветвей неизвестна (узел не передан) — прежнее поведение ([null, T]).
+			chosen = jsonValue.is_null() ? 0 : 1;
+		}
+		else if (chosen >= nb)
+		{
+			// Фолбэк к прежнему поведению ([null, T]).
+			chosen = jsonValue.is_null() ? 0 : (nb > 1 ? 1 : 0);
+		}
+		datum.selectBranch(chosen);
+
+		if (jsonValue.is_null())
+			return true;
 	}
 
 	avro::LogicalType lt = datum.logicalType();
@@ -874,15 +968,15 @@ static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value
 				avro::GenericDatum& fieldDatum = record.fieldAt(i);
 				if (fieldDatum.isUnion())
 				{
-					// Union с null - устанавливаем null
-					fieldDatum.selectBranch(0);
+					// Union с null - устанавливаем null (ветку ищем по схеме, а не «0»)
+					fieldDatum.selectBranch(avroNullBranch(schema->leafAt(i)));
 				}
 				// Иначе оставляем значение по умолчанию
 				continue;
 			}
 			avro::GenericDatum& fieldDatum = record.fieldAt(i);
 			std::string fieldPath = path.empty() ? fieldName : path + "." + fieldName;
-			if (!fillAvroFromJson(fieldDatum, it->value(), errMsg, fieldPath))
+			if (!fillAvroFromJson(fieldDatum, it->value(), errMsg, fieldPath, schema->leafAt(i)))
 			{
 				return false;
 			}
@@ -919,7 +1013,7 @@ static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value
 		{
 			avro::GenericDatum elemDatum(schema->leafAt(0));
 			std::string elemPath = path + "[" + std::to_string(i) + "]";
-			if (!fillAvroFromJson(elemDatum, arr[i], errMsg, elemPath))
+			if (!fillAvroFromJson(elemDatum, arr[i], errMsg, elemPath, schema->leafAt(0)))
 			{
 				return false;
 			}
@@ -944,7 +1038,7 @@ static bool fillAvroFromJson(avro::GenericDatum& datum, const boost::json::value
 		{
 			avro::GenericDatum valueDatum(schema->leafAt(1));
 			std::string elemPath = path + "[\"" + std::string(kv.key()) + "\"]";
-			if (!fillAvroFromJson(valueDatum, kv.value(), errMsg, elemPath))
+			if (!fillAvroFromJson(valueDatum, kv.value(), errMsg, elemPath, schema->leafAt(1)))
 			{
 				return false;
 			}
@@ -1071,7 +1165,7 @@ bool SimpleKafka1C::convertToAvroFormat(const variant_t& msgJson, const variant_
 					}
 
 					avro::GenericDatum recordDatum(schema);
-					if (!fillAvroFromJson(recordDatum, boost::json::value(jsonRecord), msg_err))
+					if (!fillAvroFromJson(recordDatum, boost::json::value(jsonRecord), msg_err, "", schema.root()))
 					{
 						return false;
 					}
@@ -1081,7 +1175,7 @@ bool SimpleKafka1C::convertToAvroFormat(const variant_t& msgJson, const variant_
 			else
 			{
 				// Стандартный формат: одна запись как объект
-				if (!fillAvroFromJson(datum, jsonInput, msg_err))
+				if (!fillAvroFromJson(datum, jsonInput, msg_err, "", schema.root()))
 				{
 					return false;
 				}
@@ -1096,7 +1190,7 @@ bool SimpleKafka1C::convertToAvroFormat(const variant_t& msgJson, const variant_
 			{
 				avro::GenericDatum recordDatum(schema);
 				std::string recordPath = "[" + std::to_string(i) + "]";
-				if (!fillAvroFromJson(recordDatum, arr[i], msg_err, recordPath))
+				if (!fillAvroFromJson(recordDatum, arr[i], msg_err, recordPath, schema.root()))
 				{
 					return false;
 				}
@@ -1366,11 +1460,11 @@ static std::string convertAvroDatumToJsonString(const avro::GenericDatum& datum)
 	}
 
 	case avro::AVRO_UNION:
-	{
-		const auto& unionDatum = datum.value<avro::GenericUnion>().datum();
-		oss << convertAvroDatumToJsonString(unionDatum);
+		// Недостижимо: GenericDatum::type() сам разворачивает union и никогда не
+		// возвращает AVRO_UNION. Обращаться здесь к value<GenericUnion>() НЕЛЬЗЯ —
+		// это разыменование nullptr (см. комментарий в fillAvroFromJson).
+		oss << "null";
 		break;
-	}
 
 	default:
 		oss << "null";
@@ -1382,23 +1476,25 @@ static std::string convertAvroDatumToJsonString(const avro::GenericDatum& datum)
 
 variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const variant_t& schemaJsonName, const variant_t& asJson)
 {
+	std::string recvDiag;
 	try
 	{
-		// Получаем бинарные данные
-		const std::vector<char>* dataPtr = nullptr;
-		size_t dataSize = 0;
-
+		// Получаем входные данные. 1С может передать ДвоичныеДанные в нативный метод
+		// КАК base64 — причём и строкой (VTYPE_PWSTR), и blob'ом (VTYPE_BLOB), с
+		// переносами строк и в любом алфавите. Поэтому материализуем вход в строку
+		// и, если это валидный base64, раскодируем; иначе берём байты как есть.
+		const char* origType = "?";
+		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
 		{
-			dataPtr = &std::get<std::vector<char>>(avroData);
-			dataSize = dataPtr->size();
+			const std::vector<char>& b = std::get<std::vector<char>>(avroData);
+			origType = "BLOB";
+			origBytes.assign(b.begin(), b.end());
 		}
 		else if (std::holds_alternative<std::string>(avroData))
 		{
-			const std::string& str = std::get<std::string>(avroData);
-			messageData.assign(str.begin(), str.end());
-			dataPtr = &messageData;
-			dataSize = messageData.size();
+			origType = "STRING";
+			origBytes = std::get<std::string>(avroData);
 		}
 		else
 		{
@@ -1406,10 +1502,63 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 			return std::string("");
 		}
 
+		const size_t origLen = origBytes.size();
+		// Локальный буфер: НЕ затираем член messageData (тело последнего kafka-сообщения).
+		std::vector<char> payloadBuf;
+		std::vector<char> decoded;
+		const bool b64decoded = tryBase64Decode(origBytes, decoded);
+		if (b64decoded)
+		{
+			payloadBuf = std::move(decoded);
+		}
+		else
+		{
+			payloadBuf.assign(origBytes.begin(), origBytes.end());
+		}
+		const std::vector<char>* dataPtr = &payloadBuf;
+		size_t dataSize = payloadBuf.size();
+
 		if (dataSize == 0)
 		{
 			msg_err = "AVRO data is empty";
 			return std::string("");
+		}
+
+		// Fingerprint of what ACTUALLY arrived from 1C (type / length / whether it
+		// was base64-decoded / first bytes), surfaced via GetLastError on failure.
+		{
+			static const char* H = "0123456789ABCDEF";
+			std::string extra = std::string(" inLen=") + std::to_string(origLen) +
+			                    " b64dec=" + (b64decoded ? "yes" : "no");
+			if (!b64decoded)
+			{
+				for (size_t j = 0; j < origLen; ++j)
+				{
+					const unsigned char c = static_cast<unsigned char>(origBytes[j]);
+					const bool okc = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+					                 (c >= '0' && c <= '9') || c == '+' || c == '/' ||
+					                 c == '-' || c == '_' || c == '=' || c == ' ' ||
+					                 c == '\t' || c == '\r' || c == '\n';
+					if (!okc)
+					{
+						extra += " badChar@" + std::to_string(j) + "=0x";
+						extra += H[c >> 4];
+						extra += H[c & 0xF];
+						break;
+					}
+				}
+			}
+			std::string hex;
+			size_t nn = dataSize < 16 ? dataSize : 16;
+			for (size_t i = 0; i < nn; ++i)
+			{
+				uint8_t bb = static_cast<uint8_t>((*dataPtr)[i]);
+				hex += H[bb >> 4];
+				hex += H[bb & 0xF];
+				hex += ' ';
+			}
+			recvDiag = " [recv: " + std::string(origType) + extra +
+			           " size=" + std::to_string(dataSize) + " first16=" + hex + "]";
 		}
 
 		// Безопасное получение параметров
@@ -1578,17 +1727,20 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 	{
 		msg_err = "AVRO error: ";
 		msg_err += ex.what();
+		msg_err += recvDiag;
 		return std::string("");
 	}
 	catch (const std::exception& ex)
 	{
 		msg_err = "Error decoding AVRO: ";
 		msg_err += ex.what();
+		msg_err += recvDiag;
 		return std::string("");
 	}
 	catch (...)
 	{
 		msg_err = "Unknown error decoding AVRO";
+		msg_err += recvDiag;
 		return std::string("");
 	}
 }
@@ -1597,27 +1749,32 @@ variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData)
 {
 	try
 	{
-		// Получаем бинарные данные
-		const std::vector<char>* dataPtr = nullptr;
-		size_t dataSize = 0;
-
+		// Вход может прийти из 1С как base64 (строкой ИЛИ blob'ом) — раскодируем,
+		// иначе берём байты как есть. Локальный буфер: член messageData не трогаем.
+		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
 		{
-			dataPtr = &std::get<std::vector<char>>(avroData);
-			dataSize = dataPtr->size();
+			const std::vector<char>& b = std::get<std::vector<char>>(avroData);
+			origBytes.assign(b.begin(), b.end());
 		}
 		else if (std::holds_alternative<std::string>(avroData))
 		{
-			const std::string& str = std::get<std::string>(avroData);
-			messageData.assign(str.begin(), str.end());
-			dataPtr = &messageData;
-			dataSize = messageData.size();
+			origBytes = std::get<std::string>(avroData);
 		}
 		else
 		{
 			msg_err = "Invalid data type for avroData. Expected string or binary data";
 			return std::string("");
 		}
+
+		std::vector<char> payloadBuf;
+		std::vector<char> decoded;
+		if (tryBase64Decode(origBytes, decoded))
+			payloadBuf = std::move(decoded);
+		else
+			payloadBuf.assign(origBytes.begin(), origBytes.end());
+		const std::vector<char>* dataPtr = &payloadBuf;
+		size_t dataSize = payloadBuf.size();
 
 		if (dataSize == 0)
 		{

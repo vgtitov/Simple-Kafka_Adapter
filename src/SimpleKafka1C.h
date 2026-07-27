@@ -28,7 +28,7 @@ using RdKafkaConfPtr = std::unique_ptr<RdKafka::Conf, RdKafkaConfDeleter>;
 class SimpleKafka1C final : public Component
 {
 public:
-	static constexpr char Version[] = u8"1.9.2";
+	static constexpr char Version[] = u8"1.9.2-fork.1";
 
 	SimpleKafka1C();
 	~SimpleKafka1C();
@@ -115,6 +115,7 @@ private:
 
 	// avro
 	std::map<std::string, avro::ValidSchema> schemesMap;	// кеш для хранение компилированных схем Avro
+	std::map<std::string, std::string> schemaTexts;	// исходный текст схемы по имени — чтобы не перекомпилировать неизменённую
 	std::vector<uint8_t> avroFile;		// формируемый avro
 
 	// protobuf - using forward declarations to avoid including protobuf headers in .h
@@ -278,6 +279,7 @@ private:
 	// Utilites
 	bool sleep(const variant_t &delay);
 	int32_t getProcessId();
+	std::string getBuildInfo();
 	bool setLogDirectory(const variant_t& logDir);
 	bool setFormatLogFiles(const variant_t& format);
 	std::string getLastError();
@@ -385,6 +387,9 @@ private:
 	public:
 
 		std::vector<RdKafka::TopicPartition*> offsets;
+		// offsets трогают и поток 1С (setReadingPosition(s)/деструктор), и фоновый
+		// поток poll librdkafka (rebalance_cb) — защищаем от гонок/двойного delete.
+		std::mutex offsetsMtx;
 
 		void rebalance_cb(RdKafka::KafkaConsumer* consumer,
 			RdKafka::ErrorCode err,

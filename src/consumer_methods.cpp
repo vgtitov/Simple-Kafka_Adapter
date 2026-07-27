@@ -16,6 +16,9 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <thread>
+#include <chrono>
 
 //================================== Consumer ==========================================
 
@@ -284,7 +287,10 @@ bool SimpleKafka1C::setReadingPosition(const variant_t& topicName, const variant
 	}
 
 	RdKafka::TopicPartition* ptr = RdKafka::TopicPartition::create(assignTopic, assignPartition, assignOffset);
-	cl_rebalance_cb.offsets.push_back(ptr);
+	{
+		std::lock_guard<std::mutex> lk(cl_rebalance_cb.offsetsMtx);
+		cl_rebalance_cb.offsets.push_back(ptr);
+	}
 	return true;
 }
 
@@ -384,10 +390,13 @@ bool SimpleKafka1C::setReadingPositions(const variant_t& jsonTopicPartitions, co
 	}
 
 	// All entries valid - apply them
-	for (const auto& entry : entries)
 	{
-		RdKafka::TopicPartition* ptr = RdKafka::TopicPartition::create(entry.topic, entry.partition, entry.offset);
-		cl_rebalance_cb.offsets.push_back(ptr);
+		std::lock_guard<std::mutex> lk(cl_rebalance_cb.offsetsMtx);
+		for (const auto& entry : entries)
+		{
+			RdKafka::TopicPartition* ptr = RdKafka::TopicPartition::create(entry.topic, entry.partition, entry.offset);
+			cl_rebalance_cb.offsets.push_back(ptr);
+		}
 	}
 
 	return true;
@@ -406,7 +415,7 @@ std::string SimpleKafka1C::consume()
 	std::ofstream eventFile{};
 	boost::property_tree::ptree jsonObj;
 	RdKafka::Headers* headers;
-	RdKafka::Message* msg = hConsumer->consume(waitMessageTimeout);
+	std::unique_ptr<RdKafka::Message> msg(hConsumer->consume(waitMessageTimeout));
 	RdKafka::ErrorCode resultConsume = msg->err();
 
 	openEventFile(consumerLogName, eventFile);
@@ -441,7 +450,7 @@ std::string SimpleKafka1C::consume()
 
 		jsonObj.put("partition", msg->partition());
 		jsonObj.put("offset", (long)msg->offset());
-		jsonObj.put("message", std::string(slice(payload, 0, msg->len())));
+		jsonObj.put("message", std::string(payload, msg->len()));
 		jsonObj.put("topic", msg->topic_name());
 		jsonObj.put("broker_id", msg->broker_id());
 		jsonObj.put("timestamp", ts.timestamp);
@@ -450,8 +459,6 @@ std::string SimpleKafka1C::consume()
 		{
 			jsonObj.put_child("headers", headersChildren);
 		}
-
-		delete msg;
 	}
 	else
 	{
@@ -462,7 +469,6 @@ std::string SimpleKafka1C::consume()
 				eventFile << currentDateTime() << " Error: " << msg_err << std::endl;
 			}
 		}
-		delete msg;
 		return EMPTYSTR;
 	}
 	boost::property_tree::write_json(s, jsonObj, true);
@@ -478,7 +484,7 @@ bool SimpleKafka1C::getMessage()
 		return false;
 	}
 
-	RdKafka::Message* msg = hConsumer->consume(waitMessageTimeout);
+	std::unique_ptr<RdKafka::Message> msg(hConsumer->consume(waitMessageTimeout));
 	RdKafka::ErrorCode resultConsume = msg->err();
 
 	std::ofstream eventFile;
@@ -489,9 +495,8 @@ bool SimpleKafka1C::getMessage()
 	{
 		this->messageLen = msg->len();
 
-		u_char* charBuf = (u_char*)msg->payload();
-		std::vector<char> binaryData(charBuf, charBuf + this->messageLen);
-		messageData = binaryData;
+		const char* charBuf = static_cast<const char*>(msg->payload());
+		messageData.assign(charBuf, charBuf + this->messageLen);
 
 		if (msg->key() && (*msg->key()).length() > 0)
 		{
@@ -523,8 +528,6 @@ bool SimpleKafka1C::getMessage()
 		// Обновляем метрики консьюмера
 		consumerMetrics.messagesConsumed++;
 		consumerMetrics.bytesConsumed += this->messageLen;
-
-		delete msg;
 	}
 	else
 	{
@@ -536,7 +539,6 @@ bool SimpleKafka1C::getMessage()
 			consumerMetrics.errorsCount++;
 			if (eventFile.is_open()) eventFile << currentDateTime() << " Error: " << msg_err << std::endl;
 		}
-		delete msg;
 		return false;
 	}
 
@@ -959,7 +961,29 @@ bool SimpleKafka1C::commitOffset(const variant_t& topicName, const variant_t& of
 	RdKafka::TopicPartition* ptr = RdKafka::TopicPartition::create(tTopicName, tPartition, tOffset);
 	offsets.push_back(ptr);
 
-	RdKafka::ErrorCode err = hConsumer->commitSync(offsets);
+	// Транзиентные сбои коммита повторяем с короткой паузой. Частый случай в режиме
+	// assign (без subscribe): на свежем консьюмере координатор группы ещё не найден к
+	// моменту commitSync -> "Local: Waiting for coordinator". Координатор обнаруживается
+	// лениво, поэтому повтор через доли секунды обычно проходит. Также покрывает
+	// таймаут/транспорт/ребаланс. Распознаём по тексту ошибки (не зависим от имён enum).
+	RdKafka::ErrorCode err = RdKafka::ERR_NO_ERROR;
+	for (int attempt = 0; attempt < 4; ++attempt)
+	{
+		err = hConsumer->commitSync(offsets);
+		if (err == RdKafka::ERR_NO_ERROR)
+			break;
+
+		const std::string es = RdKafka::err2str(err);
+		const bool transient =
+			es.find("oordinator") != std::string::npos || // Waiting for coordinator / Coordinator not available
+			es.find("imed out")  != std::string::npos ||  // Local: Timed out
+			es.find("ransport")  != std::string::npos ||  // Broker transport failure
+			es.find("ebalance")  != std::string::npos;     // Rebalance in progress
+		if (!transient)
+			break;
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(400));
+	}
 
 	// Очистка TopicPartition* для предотвращения утечки памяти
 	for (auto tp : offsets) {

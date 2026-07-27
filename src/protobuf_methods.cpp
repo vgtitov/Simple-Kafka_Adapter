@@ -159,6 +159,7 @@ public:
 	std::map<std::string, const google::protobuf::Descriptor*> descriptors;
 	google::protobuf::DescriptorPool pool;
 	google::protobuf::DynamicMessageFactory factory;
+	int buildSeq = 0; // уникализация имени файла при пере-регистрации схемы
 
 	ProtobufContext() : factory(&pool) {}
 };
@@ -172,24 +173,24 @@ bool SimpleKafka1C::putProtoSchema(const variant_t& schemaName, const variant_t&
 			protoContext = std::make_shared<ProtobufContext>();
 		}
 
+		if (!std::holds_alternative<std::string>(schemaName) || !std::holds_alternative<std::string>(protoSchema))
+		{
+			msg_err = "PutProtoSchema: schemaName and protoSchema must be strings";
+			return false;
+		}
 		std::string name = std::get<std::string>(schemaName);
 		std::string schema = std::get<std::string>(protoSchema);
 
-		// Check if schema already exists
-		auto it = protoContext->descriptors.find(name);
-		if (it != protoContext->descriptors.end())
-		{
-			// Schema already exists, skip
-			return true;
-		}
-
-		// Parse the .proto schema
+		// Не пропускаем уже зарегистрированное имя: обновлённая схема должна
+		// применяться. DescriptorPool не умеет пересобрать файл с тем же именем,
+		// поэтому имя файла уникализируем порядковым номером, а дескриптор
+		// перезаписываем под исходным именем `name`.
 		google::protobuf::io::ArrayInputStream input(schema.data(), static_cast<int>(schema.size()));
 		google::protobuf::io::Tokenizer tokenizer(&input, nullptr);
 
 		google::protobuf::compiler::Parser parser;
 		google::protobuf::FileDescriptorProto fileDescProto;
-		fileDescProto.set_name(name + ".proto");
+		fileDescProto.set_name(name + "." + std::to_string(++protoContext->buildSeq) + ".proto");
 
 		if (!parser.Parse(&tokenizer, &fileDescProto))
 		{
