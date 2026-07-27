@@ -56,8 +56,10 @@ git push -u origin upstream/<тема>
 > 1. Инструкция предлагает `avro-1.12.0`. На версиях ниже 1.12.1 декодирование глубоко вложенной
 >    рекурсивной схемы падает (`vector::_M_range_check` / segfault) — воспроизведено на 1.11.3 и
 >    исправлено в 1.12.1. То есть по инструкции собирается заведомо дефектный бинарь.
-> 2. В списке пакетов Windows нет `fmt`, `curl` и `boost-container`, хотя `CMakeLists.txt` их требует —
->    конфигурация CMake падает.
+> 2. В списке пакетов Windows (`docs/building.md`, строки 11–18) нет `fmt`, `curl` и `boost-container`,
+>    хотя `CMakeLists.txt` их требует явно — `find_package(fmt CONFIG REQUIRED)` (строка 115),
+>    `find_package(CURL REQUIRED)` (147), `find_package(Boost REQUIRED COMPONENTS json container)` (124).
+>    Конфигурация CMake по инструкции просто не проходит.
 > 3. С fmt >= 11 сборка падает на `'format' is not a member of 'fmt'`: `<avro/Exception.hh>` зовёт
 >    `fmt::format()`, а она переехала в `<fmt/format.h>`. Нужен force-include.
 > 4. Для Linux нет overlay-триплета с `-fPIC` — статические зависимости не линкуются в `.so`.
@@ -68,7 +70,7 @@ git push -u origin upstream/<тема>
 >
 > **Что в PR:** `scripts/build_windows.bat`, `scripts/build_linux.{sh,bat}`, `scripts/Dockerfile.ubuntu20`,
 > overlay-триплет, `.dockerignore`, автономные проверки Avro в `scripts/avro_selftest`, поправки
-> `CMakeLists.txt` (force-include fmt, проброс версии avro-cpp в `GetBuildInfo`) и переписанный
+> `CMakeLists.txt` (только force-include fmt — методов форка в этом PR нет) и переписанный
 > `docs/building.md` — по шагам, с проверкой после каждого и с разделом «грабли и почему так».
 
 ---
