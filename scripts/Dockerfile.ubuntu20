@@ -34,7 +34,7 @@ RUN /opt/vcpkg/vcpkg install avro-cpp --triplet x64-linux-static
 
 # ВАЖНО: avro-cpp ОБЯЗАН быть >= 1.12.1. В версиях ниже (подтверждено на 1.11.3) — краш
 # (segfault / vector range_check) при декодировании глубоко-вложенных рекурсивных Avro-схем
-# (напр. VariantItemMessage с рекурсивным Node глубины 38). В 1.12.1 исправлено. Гейтим сборку.
+# (рекурсивная запись глубиной в десятки уровней). В 1.12.1 исправлено. Гейтим сборку.
 RUN V=$(/opt/vcpkg/vcpkg list avro-cpp | awk '{print $2}' | head -1); \
     echo "avro-cpp version: $V"; \
     case "$V" in \
