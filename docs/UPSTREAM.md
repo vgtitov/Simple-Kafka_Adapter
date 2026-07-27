@@ -60,8 +60,9 @@ git push -u origin upstream/<тема>
 >    хотя `CMakeLists.txt` их требует явно — `find_package(fmt CONFIG REQUIRED)` (строка 115),
 >    `find_package(CURL REQUIRED)` (147), `find_package(Boost REQUIRED COMPONENTS json container)` (124).
 >    Конфигурация CMake по инструкции просто не проходит.
-> 3. С fmt >= 11 сборка падает на `'format' is not a member of 'fmt'`: `<avro/Exception.hh>` зовёт
->    `fmt::format()`, а она переехала в `<fmt/format.h>`. Нужен force-include.
+> 3. Зависимость от того, какой заголовок fmt подтянет avro-cpp: `<avro/Exception.hh>` зовёт
+>    `fmt::format()`. На avro-cpp 1.12.1 + fmt 12.1 проблемы нет (`core.h` тянет `format.h`), но на других
+>    сочетаниях версий в цепочку попадает только базовый заголовок — force-include это снимает.
 > 4. Для Linux нет overlay-триплета с `-fPIC` — статические зависимости не линкуются в `.so`.
 > 5. Правка пути к vcpkg прямо в `CMakeLists.txt` (как советует инструкция) означает локальную правку
 >    файла проекта у каждого сборщика. Всё это выражается через `CMAKE_TOOLCHAIN_FILE` и

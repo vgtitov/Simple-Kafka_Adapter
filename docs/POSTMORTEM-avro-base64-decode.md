@@ -66,7 +66,7 @@
 ## 5. Сборка (обязательно для воспроизведения)
 
 - **avro-cpp ≥ 1.12.1** — обязательно (на < 1.12.1 краш рекурсивной схемы; гейт в `scripts/Dockerfile.ubuntu20` и `scripts/build_windows.bat`).
-- **fmt force-include**: avro `Exception.hh` зовёт `fmt::format`, а в fmt ≥ 11 она в `<fmt/format.h>` → без force-include `'format' is not a member of 'fmt'`. В `CMakeLists.txt` добавлен `-include fmt/format.h` (`/FI` на MSVC).
+- **fmt force-include**: avro `Exception.hh` зовёт `fmt::format`. На avro-cpp 1.12.1 + fmt 12.1 сборка проходит и без него (перепроверено 27.07: `Exception.hh` тянет `<fmt/core.h>`, а тот — `format.h`), но на других сочетаниях версий падает на `'format' is not a member of 'fmt'`. В `CMakeLists.txt` добавлен `-include fmt/format.h` (`/FI` на MSVC) как страховка.
 - `scripts/triplets/x64-linux-static.cmake` — отсутствовавший overlay-триплет (без него Dockerfile падал на `COPY`).
 - `.dockerignore` — контекст сборки без `.git`.
 - `scripts/avro_selftest/` — standalone регресс-тест декода (схема + .bin / base64), повторяет путь компоненты.
