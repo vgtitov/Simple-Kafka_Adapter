@@ -116,9 +116,6 @@ cmake --build build -j"$(nproc)"
 
 Результат — `build/libSimpleKafka1C.so`.
 
-`scripts/Dockerfile.oracle9` — заготовка сборки под Oracle Linux 9 / RedOS-подобные (glibc 2.34).
-С текущим релизом не проверялась.
-
 ---
 
 ## 4. Самопроверки

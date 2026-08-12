@@ -119,7 +119,11 @@ find_package(ZLIB REQUIRED)
 if(NOT TARGET avro-cpp::avrocpp)
     add_library(avro-cpp::avrocpp INTERFACE IMPORTED)
 endif()
-find_package(avro-cpp CONFIG REQUIRED)
+# avro-cpp < 1.12.1 crashes (segfault / vector range_check) decoding deeply
+# nested recursive Avro schemas in production. Duplicated here (not only in
+# scripts/build_windows.bat / build_linux.sh) so a direct CMake configure —
+# e.g. from Visual Studio — fails fast instead of shipping a broken binary.
+find_package(avro-cpp 1.12.1 CONFIG REQUIRED)
 
 find_package(Boost REQUIRED COMPONENTS json container)
 
