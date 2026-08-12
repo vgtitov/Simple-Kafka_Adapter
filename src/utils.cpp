@@ -111,6 +111,48 @@ bool tryBase64Decode(const std::string& input, std::vector<char>& out)
 	return true;
 }
 
+bool resolveBase64Input(const std::string& input, Base64Hint hint, std::vector<char>& out,
+                         bool& wasBase64Decoded, std::string& errorOut)
+{
+	switch (hint)
+	{
+	case Base64Hint::ForceNo:
+		out.assign(input.begin(), input.end());
+		wasBase64Decoded = false;
+		return true;
+
+	case Base64Hint::ForceYes:
+	{
+		std::vector<char> decoded;
+		if (!tryBase64Decode(input, decoded))
+		{
+			errorOut = "IsBase64=true, but input is not valid base64";
+			return false;
+		}
+		out = std::move(decoded);
+		wasBase64Decoded = true;
+		return true;
+	}
+
+	case Base64Hint::Auto:
+	default:
+	{
+		std::vector<char> decoded;
+		if (tryBase64Decode(input, decoded))
+		{
+			out = std::move(decoded);
+			wasBase64Decoded = true;
+		}
+		else
+		{
+			out.assign(input.begin(), input.end());
+			wasBase64Decoded = false;
+		}
+		return true;
+	}
+	}
+}
+
 bool isValidUtf8(const char* data, size_t len)
 {
 	size_t i = 0;

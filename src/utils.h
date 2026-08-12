@@ -13,6 +13,24 @@ std::string base64Encode(const uint8_t* data, size_t len);
 // leaves out untouched) if the input is not pure, correctly-padded base64 —
 // this lets callers distinguish a base64-encoded payload from raw binary.
 bool tryBase64Decode(const std::string& input, std::vector<char>& out);
+
+// How to treat a byte string that may or may not be base64-encoded.
+enum class Base64Hint
+{
+	Auto,     // caller did not say -> guess via tryBase64Decode, fall back to raw bytes on mismatch
+	ForceYes, // caller says "this is base64" -> decode, fail loudly if it is not valid base64
+	ForceNo   // caller says "this is raw" -> never attempt to decode
+};
+
+// Resolves `input` into the bytes that should actually be parsed, honouring an
+// explicit caller hint instead of always guessing. `Auto` keeps the historical
+// heuristic behaviour (safe default, but a "closed box": a raw payload made
+// entirely of base64-alphabet bytes would be mistaken for base64). `ForceYes`/
+// `ForceNo` give the caller full control and never guess.
+// Returns false only for `ForceYes` on genuinely invalid base64 (errorOut is
+// set, out is left untouched); every other case returns true.
+bool resolveBase64Input(const std::string& input, Base64Hint hint, std::vector<char>& out,
+                         bool& wasBase64Decoded, std::string& errorOut);
 bool isValidUtf8(const char* data, size_t len);
 
 // Date/time utilities

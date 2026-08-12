@@ -1477,15 +1477,16 @@ static std::string convertAvroDatumToJsonString(const avro::GenericDatum& datum)
 	return oss.str();
 }
 
-variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const variant_t& schemaJsonName, const variant_t& asJson)
+variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const variant_t& schemaJsonName, const variant_t& asJson, const variant_t& isBase64)
 {
 	std::string recvDiag;
 	try
 	{
 		// Получаем входные данные. 1С может передать ДвоичныеДанные в нативный метод
 		// КАК base64 — причём и строкой (VTYPE_PWSTR), и blob'ом (VTYPE_BLOB), с
-		// переносами строк и в любом алфавите. Поэтому материализуем вход в строку
-		// и, если это валидный base64, раскодируем; иначе берём байты как есть.
+		// переносами строк и в любом алфавите. Поведение управляется параметром
+		// isBase64: не передан -> эвристика (обратная совместимость), явные
+		// true/false -> вызывающий сам решает, декодировать или нет.
 		const char* origType = "?";
 		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
@@ -1505,18 +1506,21 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 			return std::string("");
 		}
 
+		Base64Hint hint = Base64Hint::Auto;
+		if (std::holds_alternative<bool>(isBase64))
+		{
+			hint = std::get<bool>(isBase64) ? Base64Hint::ForceYes : Base64Hint::ForceNo;
+		}
+
 		const size_t origLen = origBytes.size();
 		// Локальный буфер: НЕ затираем член messageData (тело последнего kafka-сообщения).
 		std::vector<char> payloadBuf;
-		std::vector<char> decoded;
-		const bool b64decoded = tryBase64Decode(origBytes, decoded);
-		if (b64decoded)
+		bool b64decoded = false;
+		std::string base64Error;
+		if (!resolveBase64Input(origBytes, hint, payloadBuf, b64decoded, base64Error))
 		{
-			payloadBuf = std::move(decoded);
-		}
-		else
-		{
-			payloadBuf.assign(origBytes.begin(), origBytes.end());
+			msg_err = base64Error;
+			return std::string("");
 		}
 		const std::vector<char>* dataPtr = &payloadBuf;
 		size_t dataSize = payloadBuf.size();
@@ -1531,7 +1535,11 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 		// was base64-decoded / first bytes), surfaced via GetLastError on failure.
 		{
 			static const char* H = "0123456789ABCDEF";
+			const char* hintStr = hint == Base64Hint::ForceYes ? "forced-yes"
+			                     : hint == Base64Hint::ForceNo ? "forced-no"
+			                     : "auto";
 			std::string extra = std::string(" inLen=") + std::to_string(origLen) +
+			                    " isBase64=" + hintStr +
 			                    " b64dec=" + (b64decoded ? "yes" : "no");
 			if (!b64decoded)
 			{
@@ -1748,12 +1756,13 @@ variant_t SimpleKafka1C::decodeAvroMessage(const variant_t& avroData, const vari
 	}
 }
 
-variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData)
+variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData, const variant_t& isBase64)
 {
 	try
 	{
-		// Вход может прийти из 1С как base64 (строкой ИЛИ blob'ом) — раскодируем,
-		// иначе берём байты как есть. Локальный буфер: член messageData не трогаем.
+		// Вход может прийти из 1С как base64 (строкой ИЛИ blob'ом). isBase64 не
+		// передан -> эвристика (обратная совместимость); явные true/false ->
+		// вызывающий сам решает, декодировать или нет (см. decodeAvroMessage).
 		std::string origBytes;
 		if (std::holds_alternative<std::vector<char>>(avroData))
 		{
@@ -1770,12 +1779,20 @@ variant_t SimpleKafka1C::getAvroSchema(const variant_t& avroData)
 			return std::string("");
 		}
 
+		Base64Hint hint = Base64Hint::Auto;
+		if (std::holds_alternative<bool>(isBase64))
+		{
+			hint = std::get<bool>(isBase64) ? Base64Hint::ForceYes : Base64Hint::ForceNo;
+		}
+
 		std::vector<char> payloadBuf;
-		std::vector<char> decoded;
-		if (tryBase64Decode(origBytes, decoded))
-			payloadBuf = std::move(decoded);
-		else
-			payloadBuf.assign(origBytes.begin(), origBytes.end());
+		bool b64decoded = false;
+		std::string base64Error;
+		if (!resolveBase64Input(origBytes, hint, payloadBuf, b64decoded, base64Error))
+		{
+			msg_err = base64Error;
+			return std::string("");
+		}
 		const std::vector<char>* dataPtr = &payloadBuf;
 		size_t dataSize = payloadBuf.size();
 

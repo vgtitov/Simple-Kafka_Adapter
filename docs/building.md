@@ -123,7 +123,7 @@ cmake --build build -j"$(nproc)"
 
 ## 4. Самопроверки
 
-В `scripts/avro_selftest` лежат две автономные программы, повторяющие логику компоненты без 1С.
+В `scripts/avro_selftest` лежат автономные программы, повторяющие логику компоненты без 1С.
 
 ```bash
 cmake -B build/selftest -S scripts/avro_selftest -A x64 \
@@ -136,6 +136,7 @@ cmake --build build/selftest --config Release
 |---|---|---|
 | `avro_union_encode_test` | кодирование union: выбор ветки по узлу схемы, `null` не на первом месте, union с record-веткой, рекурсивные схемы | без аргументов, код возврата `0` = всё прошло |
 | `avro_selftest` | декодирование реальных сообщений указанной схемой | `avro_selftest <schema.json> <msg1.bin> [msg2.bin ...]` |
+| `avro_base64_hint_test` | tri-state `IsBase64` (`resolveBase64Input`): Auto повторяет прежнюю эвристику, ForceYes/ForceNo дают вызывающему явный контроль | без аргументов, код возврата `0` = всё прошло |
 
 ---
 

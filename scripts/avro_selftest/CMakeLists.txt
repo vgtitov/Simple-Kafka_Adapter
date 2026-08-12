@@ -21,6 +21,10 @@ find_package(fmt CONFIG REQUIRED)
 add_executable(avro_selftest main.cpp)
 add_executable(avro_union_encode_test union_encode_test.cpp)
 
+# avro_base64_hint_test — тест tri-state IsBase64 (resolveBase64Input), без
+# зависимости от avro-cpp/fmt: логика чисто на std::string/std::vector.
+add_executable(avro_base64_hint_test base64_hint_test.cpp)
+
 foreach(tgt avro_selftest avro_union_encode_test)
     # Mirror the link selection used by the main component (src target).
     if(TARGET avro-cpp::avrocpp_s)
