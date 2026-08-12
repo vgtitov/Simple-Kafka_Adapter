@@ -450,6 +450,10 @@ std::string SimpleKafka1C::consume()
 
 		jsonObj.put("partition", msg->partition());
 		jsonObj.put("offset", (long)msg->offset());
+		// Тело берём по паре (указатель, длина). Прежний slice(payload, 0, len)
+		// копировал байты [0..len] включительно и дописывал завершающий ноль,
+		// то есть читал payload[len] и писал payload[len+1] — за границу буфера
+		// librdkafka. Плюс лишний проход по телу и обрыв на первом нуле.
 		jsonObj.put("message", std::string(payload, msg->len()));
 		jsonObj.put("topic", msg->topic_name());
 		jsonObj.put("broker_id", msg->broker_id());
@@ -495,6 +499,7 @@ bool SimpleKafka1C::getMessage()
 	{
 		this->messageLen = msg->len();
 
+		// Тело кладём сразу в messageData, без промежуточной копии вектора.
 		const char* charBuf = static_cast<const char*>(msg->payload());
 		messageData.assign(charBuf, charBuf + this->messageLen);
 
@@ -574,7 +579,7 @@ std::string SimpleKafka1C::consumeBatch(const variant_t& maxMessages, const vari
 		int32_t remainingWait = static_cast<int32_t>(maxWait - elapsed);
 		if (remainingWait <= 0) remainingWait = 1;
 
-		RdKafka::Message* msg = hConsumer->consume(waitMessageTimeout);
+		std::unique_ptr<RdKafka::Message> msg(hConsumer->consume(waitMessageTimeout));
 		if (!msg)
 		{
 			msg_err = "Consumer returned null message";
@@ -704,8 +709,6 @@ std::string SimpleKafka1C::consumeBatch(const variant_t& maxMessages, const vari
 			msg_err = msg->errstr();
 			consumerMetrics.errorsCount++;
 		}
-
-		delete msg;
 	}
 
 	boost::json::object result;

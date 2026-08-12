@@ -150,8 +150,8 @@ int32_t SimpleKafka1C::produce(const variant_t& msg, const variant_t& topicName,
 		return -1;
 	}
 
-	// Проверяем типы входных параметров, чтобы вместо невнятного bad_variant_access
-	// вернуть понятную ошибку (тело допускается строкой или ДвоичнымиДанными).
+	// Проверяем типы параметров, чтобы вместо невнятного bad_variant_access
+	// вернуть в 1С понятный текст (тело допускается строкой или ДвоичнымиДанными).
 	if (!std::holds_alternative<std::string>(topicName) ||
 		!std::holds_alternative<int32_t>(partition) ||
 		!std::holds_alternative<std::string>(key) ||

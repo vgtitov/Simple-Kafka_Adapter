@@ -604,9 +604,10 @@ void SimpleKafka1C::setParameter(const variant_t& key, const variant_t& value)
 	}
 	const std::string k = std::get<std::string>(key);
 	const std::string v = std::get<std::string>(value);
-	// upsert: один ключ — одно значение. Иначе на переиспользуемом экземпляре
-	// настройки накапливаются дублями, а clientID()/getSettingValue() расходятся
-	// (первое vs последнее значение).
+
+	// Один ключ — одно значение. Иначе на переиспользуемом экземпляре компоненты
+	// настройки копятся дублями, а clientID() (берёт первое значение) и
+	// getSettingValue() (последнее) начинают расходиться.
 	for (auto& s : settings)
 	{
 		if (s.Key == k)
@@ -658,8 +659,8 @@ bool SimpleKafka1C::setPartitioner(const variant_t& partitionerType)
 	}
 
 	partitionerStrategy = type;
-	// Устанавливаем параметр для применения при инициализации продюсера (upsert,
-	// чтобы повторные вызовы не плодили дубли "partitioner").
+	// Применится при инициализации продюсера. Тоже upsert, чтобы повторные вызовы
+	// не плодили дубли "partitioner".
 	bool found = false;
 	for (auto& s : settings)
 	{
