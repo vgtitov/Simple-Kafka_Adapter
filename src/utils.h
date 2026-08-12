@@ -14,6 +14,10 @@ std::string base64Encode(const uint8_t* data, size_t len);
 bool tryBase64Decode(const std::string& input, std::vector<char>& out);
 
 // How to treat a byte string that may or may not be base64-encoded.
+// FORK: base64-default-heuristic — upstream's IsBase64 is a plain bool=false
+// with no guessing; our Auto default must keep the old heuristic so existing
+// 1C calls that never pass the parameter don't change behaviour. Permanent
+// divergence, see docs/FORK_DIVERGENCE.md#base64-default-heuristic.
 enum class Base64Hint
 {
 	Auto,     // caller did not say -> guess via tryBase64Decode, fall back to raw bytes on mismatch

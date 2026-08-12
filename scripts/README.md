@@ -11,5 +11,6 @@
 | `Dockerfile.oracle9` | Заготовка под Oracle Linux 9 / RedOS-подобные (glibc 2.34). С текущим релизом не проверялась |
 | `triplets/x64-linux-static.cmake` | Overlay-триплет vcpkg с `-fPIC` — без него `.so` не линкуется |
 | `avro_selftest/` | Автономные проверки Avro без 1С: декод реальных сообщений и кодирование union |
+| `check_fork_divergence.py` | Сверяет реестр [docs/FORK_DIVERGENCE.md](../docs/FORK_DIVERGENCE.md) с маркерами `// FORK: <id>` в коде — обязателен после `git merge upstream/main` |
 
 Перед пересборкой Windows «с нуля» каталог `build` удаляют — иначе кэш CMake тянет прежние настройки.
