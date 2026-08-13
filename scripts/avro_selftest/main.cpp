@@ -83,50 +83,6 @@ static std::string convertAvroDatumToJsonString(const avro::GenericDatum &datum)
     return oss.str();
 }
 
-// Mirror of utils.cpp::tryBase64Decode — verifies the component's input fix.
-static bool tryBase64Decode(const std::string &input, std::vector<char> &out)
-{
-    auto val = [](unsigned char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+' || c == '-') return 62;
-        if (c == '/' || c == '_') return 63;
-        return -1;
-    };
-    std::vector<int> sx;
-    sx.reserve(input.size());
-    for (unsigned char c : input) {
-        if (c == '=') break;
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
-        int v = val(c);
-        if (v < 0) return false;
-        sx.push_back(v);
-    }
-    const size_t k = sx.size();
-    if (k == 0 || (k % 4) == 1) return false;
-    std::vector<char> r;
-    r.reserve((k / 4) * 3 + 2);
-    size_t i = 0;
-    for (; i + 4 <= k; i += 4) {
-        uint32_t t = (sx[i] << 18) | (sx[i + 1] << 12) | (sx[i + 2] << 6) | sx[i + 3];
-        r.push_back(char((t >> 16) & 0xFF));
-        r.push_back(char((t >> 8) & 0xFF));
-        r.push_back(char(t & 0xFF));
-    }
-    size_t rem = k - i;
-    if (rem == 2) {
-        uint32_t t = (sx[i] << 18) | (sx[i + 1] << 12);
-        r.push_back(char((t >> 16) & 0xFF));
-    } else if (rem == 3) {
-        uint32_t t = (sx[i] << 18) | (sx[i + 1] << 12) | (sx[i + 2] << 6);
-        r.push_back(char((t >> 16) & 0xFF));
-        r.push_back(char((t >> 8) & 0xFF));
-    }
-    out = std::move(r);
-    return true;
-}
-
 static std::vector<char> readFile(const char *path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -142,20 +98,13 @@ static bool decodeOne(const avro::ValidSchema &schema, const char *msgPath)
 {
     try
     {
+        // The file is fed to the decoder as is. Base64 input is deliberately NOT
+        // detected here: the component requires an explicit IsBase64 flag because
+        // a raw Avro payload can consist entirely of base64-alphabet bytes, so
+        // guessing would silently decode a valid message into garbage — and this
+        // tool exists to localise decode bugs, not to introduce its own. Decode
+        // base64 outside the tool if the message arrives in that form.
         std::vector<char> data = readFile(msgPath);
-
-        // Mirror the component: if the input is valid base64 text (as 1C
-        // delivers ДвоичныеДанные to a native method), decode it first.
-        {
-            std::string asStr(data.begin(), data.end());
-            std::vector<char> decoded;
-            if (tryBase64Decode(asStr, decoded))
-            {
-                std::cout << "  (base64 input detected, decoded " << asStr.size()
-                          << " -> " << decoded.size() << " bytes)\n";
-                data = std::move(decoded);
-            }
-        }
 
         size_t off = 0;
         if (!data.empty() && static_cast<uint8_t>(data[0]) == 0x00)

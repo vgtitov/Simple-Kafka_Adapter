@@ -5,7 +5,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y git cmake g++ gcc pkg-config build-essential wget curl zip unzip tar autoconf automake libtool linux-libc-dev
 
 # 2. Build vcpkg
-RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
+# Коммит vcpkg зафиксирован: от него зависят версии ВСЕХ зависимостей, включая
+# avro-cpp (на этом коммите — 1.12.1). Без пина образ каждый раз собирается на том
+# baseline, который сегодня в HEAD, и результат перестаёт быть воспроизводимым —
+# в том числе может уехать версия, ради гейта которой всё и затевалось.
+# Обновление пина — осознанное действие: поменять SHA и пересобрать образ.
+ARG VCPKG_COMMIT=40f3c709db80acf154ac4b17a1f83c564ebd022e
+RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
+    && git -C /opt/vcpkg checkout --detach ${VCPKG_COMMIT}
 RUN /opt/vcpkg/bootstrap-vcpkg.sh
 RUN /opt/vcpkg/vcpkg integrate install
 
@@ -54,8 +61,12 @@ WORKDIR /src
 # ПАТЧ: Удаляем виндовый кэш CMake, который скопировался с хоста
 RUN rm -rf build CMakeCache.txt
 
-# ПАТЧ: Мгновенно обновляем CMake до новейшей версии через Python (т.к. в Ubuntu 20.04 встроен старый 3.16)
-RUN apt-get update && apt-get install -y python3-pip && pip3 install cmake --upgrade
+# В Ubuntu 20.04 встроен CMake 3.16, проекту нужен >= 3.20 — ставим через pip.
+# Версия зафиксирована по той же причине, что и коммит vcpkg: `--upgrade` тянул бы
+# каждый раз новый релиз (в том числе ветку 4.x, где часть портов vcpkg ломается
+# из-за снятой совместимости со старыми cmake_minimum_required).
+ARG CMAKE_VERSION=3.31.10
+RUN apt-get update && apt-get install -y python3-pip && pip3 install "cmake==${CMAKE_VERSION}"
 
 # Собираем проект свежим CMake
 # ПАТЧ: Прикрепляем статические библиотеки криптографии и авторизации к финальной .so компоненте
